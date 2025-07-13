@@ -1,0 +1,391 @@
+import numpy as np
+import tensorflow as tf
+import matplotlib.pyplot as plt
+import deepchem as dc
+from sklearn.metrics import accuracy_score, roc_auc_score, classification_report
+from sklearn.ensemble import RandomForestClassifier
+import pandas as pd
+from itertools import product
+import warnings
+warnings.filterwarnings(‘ignore’)
+
+# Set random seeds for reproducibility
+
+np.random.seed(456)
+tf.random.set_seed(456)
+
+print(“TensorFlow version:”, tf.**version**)
+print(“DeepChem version:”, dc.**version**)
+
+# 1) Load the data
+
+print(“Loading Tox21 dataset…”)
+_, (train, valid, test), _ = dc.molnet.load_tox21()
+
+# Extract data
+
+train_X, train_y, train_w = train.X, train.y, train.w
+valid_X, valid_y, valid_w = valid.X, valid.y, valid.w
+test_X, test_y, test_w = test.X, test.y, test.w
+
+# Remove extra tasks (focus on first task)
+
+train_y = train_y[:, 0]
+valid_y = valid_y[:, 0]
+test_y = test_y[:, 0]
+train_w = train_w[:, 0]
+valid_w = valid_w[:, 0]
+test_w = test_w[:, 0]
+
+print(f”Training set size: {train_X.shape}”)
+print(f”Validation set size: {valid_X.shape}”)
+print(f”Test set size: {test_X.shape}”)
+print(f”Feature dimension: {train_X.shape[1]}”)
+
+# 2) Baseline Random Forest model
+
+print(”\n” + “=”*50)
+print(“BASELINE: Random Forest Classifier”)
+print(”=”*50)
+
+sklearn_model = RandomForestClassifier(
+class_weight=“balanced”,
+n_estimators=50,
+random_state=456
+)
+
+print(“Fitting Random Forest model…”)
+sklearn_model.fit(train_X, train_y)
+
+# Predictions
+
+train_y_pred_rf = sklearn_model.predict(train_X)
+valid_y_pred_rf = sklearn_model.predict(valid_X)
+test_y_pred_rf = sklearn_model.predict(test_X)
+
+# Calculate weighted accuracies
+
+train_acc_rf = accuracy_score(train_y, train_y_pred_rf, sample_weight=train_w)
+valid_acc_rf = accuracy_score(valid_y, valid_y_pred_rf, sample_weight=valid_w)
+test_acc_rf = accuracy_score(test_y, test_y_pred_rf, sample_weight=test_w)
+
+print(f”Random Forest - Weighted Train Accuracy: {train_acc_rf:.4f}”)
+print(f”Random Forest - Weighted Valid Accuracy: {valid_acc_rf:.4f}”)
+print(f”Random Forest - Weighted Test Accuracy: {test_acc_rf:.4f}”)
+
+# 3) Improved Deep Learning Model Function
+
+def eval_tox21_hyperparams(n_hidden=50, n_layers=1, learning_rate=0.001,
+dropout_prob=0.5, n_epochs=45, batch_size=100,
+weight_positives=True, seed=456):
+“””
+Evaluate Tox21 model with given hyperparameters.
+Fixed version with proper TensorFlow 2.x compatibility.
+“””
+
+```
+print(f"\nEvaluating hyperparameters:")
+print(f"n_hidden: {n_hidden}, n_layers: {n_layers}, lr: {learning_rate}")
+print(f"dropout: {dropout_prob}, epochs: {n_epochs}, batch_size: {batch_size}")
+print(f"weight_positives: {weight_positives}, seed: {seed}")
+
+# Set seeds for reproducibility
+tf.random.set_seed(seed)
+np.random.seed(seed)
+
+d = train_X.shape[1]  # Feature dimension
+
+# Build model using TensorFlow 2.x/Keras
+model = tf.keras.Sequential()
+
+# Input layer
+model.add(tf.keras.layers.Dense(n_hidden, activation='relu', input_shape=(d,)))
+model.add(tf.keras.layers.Dropout(dropout_prob))
+
+# Hidden layers
+for layer in range(n_layers - 1):
+    model.add(tf.keras.layers.Dense(n_hidden, activation='relu'))
+    model.add(tf.keras.layers.Dropout(dropout_prob))
+
+# Output layer
+model.add(tf.keras.layers.Dense(1, activation='sigmoid'))
+
+# Compile model
+if weight_positives:
+    # Calculate class weights
+    pos_weight = np.sum(train_w * (1 - train_y)) / np.sum(train_w * train_y)
+    class_weight = {0: 1.0, 1: pos_weight}
+else:
+    class_weight = None
+
+model.compile(
+    optimizer=tf.keras.optimizers.Adam(learning_rate=learning_rate),
+    loss='binary_crossentropy',
+    metrics=['accuracy']
+)
+
+# Train model
+history = model.fit(
+    train_X, train_y,
+    validation_data=(valid_X, valid_y),
+    epochs=n_epochs,
+    batch_size=batch_size,
+    class_weight=class_weight,
+    sample_weight=train_w,
+    verbose=0
+)
+
+# Make predictions
+valid_y_pred_prob = model.predict(valid_X, verbose=0)
+valid_y_pred = (valid_y_pred_prob > 0.5).astype(int).flatten()
+
+# Calculate weighted accuracy
+weighted_score = accuracy_score(valid_y, valid_y_pred, sample_weight=valid_w)
+
+# Calculate AUC score
+try:
+    auc_score = roc_auc_score(valid_y, valid_y_pred_prob.flatten(), sample_weight=valid_w)
+except:
+    auc_score = 0.0
+
+return weighted_score, auc_score, history
+```
+
+# 4) Hyperparameter Grid Search with Multiple Seeds
+
+print(”\n” + “=”*50)
+print(“HYPERPARAMETER TUNING”)
+print(”=”*50)
+
+# Define hyperparameter search space
+
+hyperparams = {
+‘n_hidden’: [32, 64, 128, 256],
+‘n_layers’: [1, 2, 3],
+‘learning_rate’: [0.001, 0.01, 0.1],
+‘dropout_prob’: [0.3, 0.5, 0.7],
+‘n_epochs’: [30, 45, 60],
+‘batch_size’: [50, 100, 200],
+‘weight_positives’: [True, False]
+}
+
+# For computational efficiency, we’ll use a subset of combinations
+
+# In practice, you might want to use random search or Bayesian optimization
+
+selected_hyperparams = {
+‘n_hidden’: [64, 128],
+‘n_layers’: [1, 2],
+‘learning_rate’: [0.001, 0.01],
+‘dropout_prob’: [0.3, 0.5],
+‘n_epochs’: [30, 45],
+‘batch_size’: [100],
+‘weight_positives’: [True]
+}
+
+# Number of random seeds to average over
+
+n_seeds = 3
+seeds = [456, 789, 123]
+
+# Store results
+
+results = []
+
+print(f”Starting hyperparameter search with {n_seeds} seeds per configuration…”)
+print(“This may take a while…”)
+
+# Generate all combinations
+
+param_combinations = list(product(*selected_hyperparams.values()))
+param_names = list(selected_hyperparams.keys())
+
+best_score = 0
+best_params = None
+best_auc = 0
+
+for i, param_values in enumerate(param_combinations):
+params = dict(zip(param_names, param_values))
+
+```
+print(f"\nConfiguration {i+1}/{len(param_combinations)}: {params}")
+
+# Run multiple seeds and average results
+scores = []
+aucs = []
+
+for seed in seeds:
+    try:
+        score, auc, history = eval_tox21_hyperparams(seed=seed, **params)
+        scores.append(score)
+        aucs.append(auc)
+    except Exception as e:
+        print(f"Error with seed {seed}: {e}")
+        continue
+
+if scores:  # If we have at least one successful run
+    avg_score = np.mean(scores)
+    std_score = np.std(scores)
+    avg_auc = np.mean(aucs)
+    std_auc = np.std(aucs)
+    
+    result = {
+        'params': params,
+        'avg_accuracy': avg_score,
+        'std_accuracy': std_score,
+        'avg_auc': avg_auc,
+        'std_auc': std_auc,
+        'scores': scores,
+        'aucs': aucs
+    }
+    results.append(result)
+    
+    print(f"Average Accuracy: {avg_score:.4f} ± {std_score:.4f}")
+    print(f"Average AUC: {avg_auc:.4f} ± {std_auc:.4f}")
+    
+    if avg_score > best_score:
+        best_score = avg_score
+        best_params = params
+        best_auc = avg_auc
+```
+
+print(”\n” + “=”*50)
+print(“HYPERPARAMETER TUNING RESULTS”)
+print(”=”*50)
+
+# Sort results by average accuracy
+
+results.sort(key=lambda x: x[‘avg_accuracy’], reverse=True)
+
+print(f”\nTop 5 configurations:”)
+for i, result in enumerate(results[:5]):
+print(f”\nRank {i+1}:”)
+print(f”Parameters: {result[‘params’]}”)
+print(f”Accuracy: {result[‘avg_accuracy’]:.4f} ± {result[‘std_accuracy’]:.4f}”)
+print(f”AUC: {result[‘avg_auc’]:.4f} ± {result[‘std_auc’]:.4f}”)
+
+print(f”\nBest configuration:”)
+print(f”Parameters: {best_params}”)
+print(f”Validation Accuracy: {best_score:.4f}”)
+print(f”Validation AUC: {best_auc:.4f}”)
+
+# 5) Train final model with best parameters and evaluate on test set
+
+print(”\n” + “=”*50)
+print(“FINAL MODEL EVALUATION”)
+print(”=”*50)
+
+print(“Training final model with best hyperparameters…”)
+
+# Train final model
+
+final_score, final_auc, final_history = eval_tox21_hyperparams(**best_params, seed=456)
+
+# Now evaluate on test set
+
+tf.random.set_seed(456)
+np.random.seed(456)
+
+d = train_X.shape[1]
+model = tf.keras.Sequential()
+model.add(tf.keras.layers.Dense(best_params[‘n_hidden’], activation=‘relu’, input_shape=(d,)))
+model.add(tf.keras.layers.Dropout(best_params[‘dropout_prob’]))
+
+for layer in range(best_params[‘n_layers’] - 1):
+model.add(tf.keras.layers.Dense(best_params[‘n_hidden’], activation=‘relu’))
+model.add(tf.keras.layers.Dropout(best_params[‘dropout_prob’]))
+
+model.add(tf.keras.layers.Dense(1, activation=‘sigmoid’))
+
+if best_params[‘weight_positives’]:
+pos_weight = np.sum(train_w * (1 - train_y)) / np.sum(train_w * train_y)
+class_weight = {0: 1.0, 1: pos_weight}
+else:
+class_weight = None
+
+model.compile(
+optimizer=tf.keras.optimizers.Adam(learning_rate=best_params[‘learning_rate’]),
+loss=‘binary_crossentropy’,
+metrics=[‘accuracy’]
+)
+
+# Train on full training set
+
+history = model.fit(
+train_X, train_y,
+validation_data=(valid_X, valid_y),
+epochs=best_params[‘n_epochs’],
+batch_size=best_params[‘batch_size’],
+class_weight=class_weight,
+sample_weight=train_w,
+verbose=1
+)
+
+# Test set evaluation
+
+test_y_pred_prob = model.predict(test_X, verbose=0)
+test_y_pred = (test_y_pred_prob > 0.5).astype(int).flatten()
+
+test_accuracy = accuracy_score(test_y, test_y_pred, sample_weight=test_w)
+test_auc = roc_auc_score(test_y, test_y_pred_prob.flatten(), sample_weight=test_w)
+
+print(f”\nFinal Model Performance:”)
+print(f”Validation Accuracy: {final_score:.4f}”)
+print(f”Validation AUC: {final_auc:.4f}”)
+print(f”Test Accuracy: {test_accuracy:.4f}”)
+print(f”Test AUC: {test_auc:.4f}”)
+
+print(f”\nComparison with Random Forest:”)
+print(f”Random Forest Test Accuracy: {test_acc_rf:.4f}”)
+print(f”Deep Learning Test Accuracy: {test_accuracy:.4f}”)
+print(f”Improvement: {test_accuracy - test_acc_rf:.4f}”)
+
+# Plot training history
+
+plt.figure(figsize=(12, 4))
+
+plt.subplot(1, 2, 1)
+plt.plot(history.history[‘loss’], label=‘Training Loss’)
+plt.plot(history.history[‘val_loss’], label=‘Validation Loss’)
+plt.title(‘Model Loss’)
+plt.xlabel(‘Epoch’)
+plt.ylabel(‘Loss’)
+plt.legend()
+
+plt.subplot(1, 2, 2)
+plt.plot(history.history[‘accuracy’], label=‘Training Accuracy’)
+plt.plot(history.history[‘val_accuracy’], label=‘Validation Accuracy’)
+plt.title(‘Model Accuracy’)
+plt.xlabel(‘Epoch’)
+plt.ylabel(‘Accuracy’)
+plt.legend()
+
+plt.tight_layout()
+plt.show()
+
+# Save results summary
+
+results_df = pd.DataFrame([
+{
+‘Configuration’: f”Config_{i+1}”,
+‘n_hidden’: r[‘params’][‘n_hidden’],
+‘n_layers’: r[‘params’][‘n_layers’],
+‘learning_rate’: r[‘params’][‘learning_rate’],
+‘dropout_prob’: r[‘params’][‘dropout_prob’],
+‘n_epochs’: r[‘params’][‘n_epochs’],
+‘batch_size’: r[‘params’][‘batch_size’],
+‘weight_positives’: r[‘params’][‘weight_positives’],
+‘avg_accuracy’: r[‘avg_accuracy’],
+‘std_accuracy’: r[‘std_accuracy’],
+‘avg_auc’: r[‘avg_auc’],
+‘std_auc’: r[‘std_auc’]
+}
+for i, r in enumerate(results)
+])
+
+print(”\nResults summary saved to DataFrame:”)
+print(results_df.head())
+
+print(”\n” + “=”*50)
+print(“ANALYSIS COMPLETE”)
+print(”=”*50)
